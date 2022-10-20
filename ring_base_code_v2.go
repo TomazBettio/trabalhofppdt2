@@ -14,12 +14,11 @@ type mensagem struct {
 	lider int
 }
 
-const (
-	OK = iota
-	ERRO
-	FALHA 
+const ( // tipos de mensagens trocadas entre os processos
+	FALHA = iota
 	ELEICAO
-	LIDER 
+	LIDER
+	TERMINATE 
 )
 
 var (
@@ -35,31 +34,30 @@ var (
 
 func ElectionControler(in chan int) {
 	defer wg.Done()
-
 	var temp mensagem
-
 	// comandos para o anel iciam aqui
-
 	// mudar o processo 0 - canal de entrada 3 - para falho (defini mensagem tipo 2 pra isto)
 
-	temp.tipo = 2
-	chans[3] <- temp
+	temp.tipo = FALHA
 	fmt.Printf("Controle: mudar o processo 0 para falho\n")
+	chans[3] <- temp
 
-	fmt.Printf("Controle: confirmação %d\n", <-in) // receber e imprimir confirmação
+	for true {
+		proximoLider := <-in
 
-	// mudar o processo 1 - canal de entrada 0 - para falho (defini mensagem tipo 2 pra isto)
+		if proximoLider == 1 {
+			temp.tipo = TERMINATE //quebra o loop dos processos
+			chans[(proximoLider+3)%4] <- temp
+			break
+		}
+		fmt.Printf("Controle: confirmação líder escolhido foi %d\n", proximoLider) // receber e imprimir confirmação
 
-	temp.tipo = 2
-	chans[0] <- temp
-	fmt.Printf("Controle: mudar o processo 1 para falho\n")
-	fmt.Printf("Controle: confirmação %d\n", <-in) // receber e imprimir confirmação
+		// mudar o processo 1 - canal de entrada 0 - para falho (defini mensagem tipo 2 pra isto)
 
-	// matar os outrs processos com mensagens não conhecidas (só pra cosumir a leitura)
-
-	temp.tipo = 4
-	chans[1] <- temp
-	chans[2] <- temp
+		fmt.Printf("Controle: mudar o processo %d para falho\n", proximoLider)
+		temp.tipo = FALHA
+		chans[(proximoLider+3)%4] <- temp
+	}
 
 	fmt.Println("\n   Processo controlador concluído\n")
 }
@@ -74,57 +72,70 @@ func ElectionStage(TaskId int, in chan mensagem, out chan mensagem, leader int) 
 
 	actualLeader = leader // indicação do ider veio por parâmatro
 
-	while true {
-			temp := <-in // ler mensagem
-		fmt.Printf("%2d: recebi mensagem %d, [ %d, %d, %d ]\n", TaskId, temp.tipo, temp.corpo[0], temp.corpo[1], temp.corpo[2])
+	Loop:
+	for true {
 
+		temp := <-in // ler mensagem
 		switch temp.tipo {
 		case FALHA:
 			{
 				bFailed = true
 				fmt.Printf("%2d: falho %v \n", TaskId, bFailed)
 				fmt.Printf("%2d: lider atual %d\n", TaskId, actualLeader)
-				var eleicaoMensagem mensagem;
-				eleicaoMensagem.tipo = ELEICAO; // indica que é uma mensagem de eleicao
-				eleicaoMensagem.corpo[TaskId] = -1; //indica que está inativo
-				out <- eleicaoMensagem;
-				fmt.Printf("Eleicao em andamento...\n");
-				resultadoEleicao := <- in
-				proximoLider := -1
-				for i:= 0; i < 4; i++ {
+				var eleicaoMensagem mensagem
+				eleicaoMensagem.tipo = ELEICAO     					// indica que é uma mensagem de eleicao
+				eleicaoMensagem.corpo[TaskId] = -1 					//indica que está inativo
+				out <- eleicaoMensagem
+				fmt.Printf("Eleicao em andamento...\n")
+				resultadoEleicao := <-in 							// rececbe o corpo da mensagem com todos TaskId's
+				proximoLider := -1 									//verifica qual o maior TaskId
+				for i := 0; i < 4; i++ {
 					if resultadoEleicao.corpo[i] > proximoLider {
 						proximoLider = resultadoEleicao.corpo[i]
 					}
 				}
-				fmt.Printf("Novo Lider: %d\n", proximoLider);
-				controle <- proximoLider;
-				eleicaoMensagem.tipo = LIDER;
-				eleicaoMensagem.lider = proximoLider;
-				controle <- -5
+				fmt.Printf("%d escolheu novo Lider: %d\n", TaskId, proximoLider)
+				eleicaoMensagem.tipo = LIDER						 //inidica que é uma mensagem contendo o lider
+				eleicaoMensagem.lider = proximoLider
+				out <- eleicaoMensagem
 			}
 		case ELEICAO:
 			{
-				bFailed = false
-				fmt.Printf("%2d: falho %v \n", TaskId, bFailed)
-				//fmt.Printf("%2d: lider atual %d\n", TaskId, actualLeader)
-				temp.corpo[TaskId] = TaskId;
-				out <- temp;
-				//controle <- -5
+				//bFailed = false
+				if bFailed {
+					fmt.Printf("%2d: está inativo\n", TaskId)
+					temp.corpo[TaskId] = -1
+				}else{
+					fmt.Printf("%2d: colocou o TaskId\n", TaskId)
+					temp.corpo[TaskId] = TaskId;
+				}
+				out <- temp
 			}
 		case LIDER:
-			{	
-				actualLeader = temp.lider;
-				fmt.Printf("Recebido novo lider: %d\n", temp.lider);
-				out <- temp;
-			}
-		default:
 			{
-				fmt.Printf("%2d: não conheço este tipo de mensagem\n", TaskId)
-				fmt.Printf("%2d: lider atual %d\n", TaskId, actualLeader)
+				if actualLeader == temp.lider { 					//identifica que a mensagem deu uma volta
+					controle <- actualLeader						// avisa o controle para falhar o proximo lider
+				} else {
+					actualLeader = temp.lider
+					fmt.Printf("%d: recebeu novo lider: %d\n", TaskId, actualLeader)
+					out <- temp
+				}
+			}
+		case TERMINATE:
+			{
+				if TaskId == actualLeader { 
+					fmt.Printf("%2d: Mensagem de erro chegou no lider %d\n", TaskId, actualLeader)
+					out <- temp 			//lider manda a mensagem de erro para o proximo 
+					<- in					//espera que de a volta para terminar
+					break Loop
+				}else {
+					fmt.Printf("%2d: encerrou\n", TaskId)
+					out <- temp 			//termina o proximo processo
+					break Loop
+				}
 			}
 		}
 	}
-	
 
 	fmt.Printf("%2d: terminei \n", TaskId)
 }
