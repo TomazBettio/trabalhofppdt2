@@ -16,6 +16,7 @@ type mensagem struct {
 
 const ( // tipos de mensagens trocadas entre os processos
 	FALHA = iota
+	ESCOLHE_LIDER
 	ELEICAO
 	LIDER
 	TERMINATE 
@@ -42,9 +43,14 @@ func ElectionControler(in chan int) {
 	fmt.Printf("Controle: mudar o processo 0 para falho\n")
 	chans[3] <- temp
 
+	<- in
+	temp.tipo = ESCOLHE_LIDER
+	chans[1] <- temp
+
 	for true {
 		proximoLider := <-in
-
+		proximoEscolher := 2
+		if proximoLider == 2 {proximoEscolher = 1}
 		if proximoLider == 1 {
 			temp.tipo = TERMINATE //quebra o loop dos processos
 			chans[(proximoLider+3)%4] <- temp
@@ -57,6 +63,10 @@ func ElectionControler(in chan int) {
 		fmt.Printf("Controle: mudar o processo %d para falho\n", proximoLider)
 		temp.tipo = FALHA
 		chans[(proximoLider+3)%4] <- temp
+
+		<- in
+		temp.tipo = ESCOLHE_LIDER
+		chans[(proximoEscolher+3)%4] <- temp
 	}
 
 	fmt.Println("\n   Processo controlador concluído\n")
@@ -82,11 +92,17 @@ func ElectionStage(TaskId int, in chan mensagem, out chan mensagem, leader int) 
 				bFailed = true
 				fmt.Printf("%2d: falho %v \n", TaskId, bFailed)
 				fmt.Printf("%2d: lider atual %d\n", TaskId, actualLeader)
+				controle <- TaskId										//indica que o processo falhou 
+				
+			}
+		case ESCOLHE_LIDER:
+			{
+				fmt.Printf("%2d Detectou que o lider %d falhou\n", TaskId, actualLeader)
+				fmt.Printf("%2d vai comecar a eleicao\n", TaskId)
 				var eleicaoMensagem mensagem
 				eleicaoMensagem.tipo = ELEICAO     					// indica que é uma mensagem de eleicao
-				eleicaoMensagem.corpo[TaskId] = -1 					//indica que está inativo
+				eleicaoMensagem.corpo[TaskId] = TaskId 				//indica que está inativo
 				out <- eleicaoMensagem
-				fmt.Printf("Eleicao em andamento...\n")
 				resultadoEleicao := <-in 							// rececbe o corpo da mensagem com todos TaskId's
 				proximoLider := -1 									//verifica qual o maior TaskId
 				for i := 0; i < 4; i++ {
